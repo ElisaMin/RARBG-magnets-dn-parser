@@ -1,11 +1,10 @@
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.runBlocking
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.transactions.transaction
-import java.io.File
+import java.io.BufferedWriter
 import java.sql.DriverManager
-import kotlin.concurrent.thread
+import kotlin.sequences.Sequence
 
 val prefixes by lazy {
     transaction {
@@ -167,11 +166,9 @@ object a {
     @JvmStatic
     var i = 0
 }
-fun File.toMagnetsDB(
-    filePrefix: String = "dist/rarbg",
-    chunk: Int = 5000,
-) {
-    val db = Database.connect(getNewConnection = {
+
+fun db(filePrefix:String): Database {
+    return Database.connect(getNewConnection = {
         DriverManager.getConnection("jdbc:sqlite:$filePrefix.db")
     }).also {db ->
         transaction(db) {
@@ -188,82 +185,71 @@ fun File.toMagnetsDB(
             }
         }
     }
-    a.i = 0
+}
 
 
-    thread {
-        val maxLines = bufferedReader().use { reader ->
-            reader.lines().count()
-        }
-        val max = maxLines.toFloat()
-        var percent = 0.0f
-        while (true) {
-            Thread.sleep(1000)
-            val line = a.i.toFloat()
-            //percent
-            val leastPresent = percent
-            percent = (line / max) * 100
-            print("\r${"%.2f".format(percent)}% lines: ${a.i}/$maxLines ")
-            //complain second time
-            val spends = percent - leastPresent
-            val last = 100 - percent
-            val second = last / spends
-            val left = when {
+
+fun displayingProgress(maxLines:Int) {
+    val max = maxLines.toFloat()
+    var percent = 0.0f
+    while (true) {
+        Thread.sleep(1000)
+        val line = a.i.toFloat()
+        //percent
+        val leastPresent = percent
+        percent = (line / max) * 100
+        print("\r${"%.2f".format(percent)}% lines: ${a.i}/$maxLines ")
+        //complain second time
+        val spends = percent - leastPresent
+        val last = 100 - percent
+        val second = last / spends
+        val left = when {
 //                second > 60 * 60 * 24 -> {
 //                    val days = second / (60 * 60 * 24)
 //                    "${"%.2f".format(days)} days"
 //                }
-                second > 60 * 60 -> {
-                    val hours = second / (60 * 60)
-                    "${"%.2f".format(hours)} hours"
-                }
-                second > 60 -> {
-                    val minutes = second / 60
-                    "${"%.2f".format(minutes)} minutes"
-                }
-                else -> {
-                    "${"%.2f".format(second)} seconds"
-                }
+            second > 60 * 60 -> {
+                val hours = second / (60 * 60)
+                "${"%.2f".format(hours)} hours"
             }
-            print("left: $left")
+            second > 60 -> {
+                val minutes = second / 60
+                "${"%.2f".format(minutes)} minutes"
+            }
+            else -> {
+                "${"%.2f".format(second)} seconds"
+            }
+        }
+        print("left: $left")
 
 //            println("${
 //                // save two digits
 //                "%.2f".format((line / max) * 100)
 //            }% lines: ${a.i}/$maxLines")
-            if (a.i >= maxLines) {
-                break
-            }
+        if (a.i >= maxLines) {
+            break
         }
     }
-    val yaml = File("$filePrefix.yaml").bufferedWriter()
-//    val scope = CoroutineScope(Dispatchers.IO)
-    useLines {
-        it.chunked(chunk)
-            .asFlow()
-            .flowOn(Dispatchers.Default)
-            .map { it.map { link -> MagnetLink(link) } }
-            .flowOn(Dispatchers.IO)
-            .onEach { links ->
-                transaction(db) {
-                    links.forEach {
-                        it.saveToDB {
-                            yaml.appendLine(it)
-                        }
-                        a.i++
-                    }
-                    yaml.flush()
-                }
-            }.let {
-                runBlocking {
-                    it.collect()
-                    yaml.flush()
-                    yaml.close()
-                }
-            }
-
-    }
-
-    Unit
-
 }
+suspend fun Sequence<String>.toMagnetsDB(
+    db:Database,
+    yaml: BufferedWriter? = null,
+    chunk: Int = 5000,
+) = this.chunked(chunk)
+    .asFlow()
+    .flowOn(Dispatchers.Default)
+    .map { it.map { link -> MagnetLink(link) } }
+    .flowOn(Dispatchers.IO)
+    .onEach { links ->
+        transaction(db) {
+            links.forEach {
+                it.saveToDB { line -> yaml?.appendLine(line) }
+                a.i++
+            }
+            yaml?.flush()
+        }
+    }.let {
+        it.collect()
+        yaml?.flush()
+        yaml?.close()
+    }
