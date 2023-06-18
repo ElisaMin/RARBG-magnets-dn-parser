@@ -1,10 +1,10 @@
 plugins {
-    id 'org.jetbrains.kotlin.jvm' version '1.8.21'
-    id 'application'
+    kotlin("jvm") version "1.8.21"
+    application
 }
 
-group = 'me.heizi.lab.rarbg'
-version = '1.0-SNAPSHOT'
+group = "me.heizi.lab.rarbg"
+version = "1.0-SNAPSHOT"
 
 repositories {
     mavenCentral()
@@ -21,17 +21,13 @@ dependencies {
     implementation("org.slf4j:slf4j-api:2.0.0-alpha5")
     implementation("org.slf4j:slf4j-nop:2.0.0-alpha5")
 }
-
-test {
-    useJUnitPlatform()
-}
 kotlin {
     jvmToolchain(19)
     target {
         compilations {
             all {
                 kotlinOptions {
-//                    freeCompilerArgs = listOf("-Xcontext-receivers")
+                    freeCompilerArgs = listOf("-Xcontext-receivers")
                 }
             }
         }
@@ -40,5 +36,5 @@ kotlin {
 
 
 application {
-    mainClassName = 'MainKt'
+    mainClass.set("MainKt")
 }
