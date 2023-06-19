@@ -1,6 +1,8 @@
-import kotlinx.coroutines.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import java.io.File
-import kotlin.concurrent.thread
 
 fun getFile(s:String) = File("../bts/rarbg-main/${s}.txt")
 suspend fun toMagnetsDB(dist:String,vararg files: File):CoroutineScope {
@@ -9,10 +11,10 @@ suspend fun toMagnetsDB(dist:String,vararg files: File):CoroutineScope {
             .asSequence()
             .flatten()
     return coroutineScope {
-        launch {
-            val count = sequence().count()
-            displayingProgress(count)
-        }
+//        launch {
+//            val count = sequence().count()
+//            displayingProgress(count)
+//        }
         launch {
             sequence().toMagnetsDB(
                 db("dist/$dist"),
@@ -22,9 +24,11 @@ suspend fun toMagnetsDB(dist:String,vararg files: File):CoroutineScope {
         this
     }
 }
-@OptIn(FlowPreview::class)
+
 suspend fun main() {
-    toMagnetsDB("mas.hash.id",
+
+
+    toMagnetsDB("rarbg.full",
         getFile("moviesrarbg"),
         getFile("showsrarbg")
     ).coroutineContext[Job]!!.join()

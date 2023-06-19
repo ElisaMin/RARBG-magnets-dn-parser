@@ -1,138 +1,19 @@
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.*
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.transactions.transaction
 import java.io.BufferedWriter
 import java.sql.DriverManager
 import kotlin.sequences.Sequence
 
-val prefixes by lazy {
-    transaction {
-        Prefixes.selectAll().associate {
-            it[Prefixes.id].value to it[Prefixes.prefix]
-        }
-    }
-}
 
-context(Transaction)
-fun ParseableName.saveToDBAndYaml(
-//    id:String,
-    id:String,
-    out: (String) -> Unit = ::println,
-) {
-    var contentName = ""
-    if(isIgnore) {
-        Ignores.insert {
-            it[Ignores.magnet_id] = id
-        }
-        out("  ignore: true")
-        return
-    }
-    loggedPrefix()?.let { prefix ->
-        val prefixId = prefixes
-            .map { it.key to it.value }
-            .find {
-                it.second == prefix
-            }!!.first
-        PrefixSerial.insert {
-            it[magnet_id] = id
-            it[prefix_id] = prefixId
-        }
-        out("  prefix: $prefix")
-        return
-    }
-    getPlazaInfo()?.let { (name, version, suffix) ->
-        contentName = name
-        if (version!=null) {
-            val r = Plaza.select {
-                Plaza.name like "$name%"
-            }.toList()
-            val plaza_id = when (r.size) {
-                1 -> r.first()[Plaza.id].value
-                0 ->  Plaza.insertAndGetId {
-                    it[magnet_id] = id
-                    it[Plaza.name] = name
-                }.value
-                else -> r.run {
-                    find {
-                        it[Plaza.name] == name
-                    }?:first()
-                }[Plaza.id].value
-            }
-            PlazaUpdate.insert {
-                it[PlazaUpdate.magnet_id] = id
-                it[PlazaUpdate.plaza_id] = plaza_id
-                it[PlazaUpdate.update] = version
-            }.let {
-                out("  plazaUpdate:")
-                out("    name: $name")
-                out("    version: ${it[PlazaUpdate.update]}")
-            }
-        } else {
-            //insert
-            Plaza.insert {
-                it[magnet_id] = id
-                it[Plaza.name] = name
-            }.let {
-                out("  plaza:")
-                out("    name: $name")
-            }
-        }
-    }
-    serialInfo?.let { (name,serialInfo) ->
-        contentName = contentName.takeIf { it.isNotBlank() } ?: name
-        Serial.insert {
-            it[Serial.magnet_id] = id
-            it[Serial.info] = serialInfo
-        }.let {
-            out("  serial:")
-            out("    name: $name")
-            out("    info: ${it[Serial.info]}")
-        }
-    }
-    year?.let { (name,years) ->
-        contentName = contentName.takeIf { it.isNotBlank() } ?: name
-        val year = years.toIntOrNull() ?: return
-        MovieYear.insert {
-            it[MovieYear.magnet_id] = id
-            it[MovieYear.year] = year
-            it[MovieYear.name] = name
-        }.let {
-            out("  year:")
-            out("    name: ${it[MovieYear.name]}")
-            out("    year: ${it[MovieYear.year]}")
-        }
-    }
-    videoInfo?.let { (name,quality,codec) ->
-        contentName = contentName.takeIf { it.isNotBlank() } ?: name
-        MovieType.insert {
-            it[MovieType.magnet_id] = id
-            it[MovieType.quality] = quality
-            it[MovieType.codec] = codec
-        }.let {
-            out("  movieType:")
-            out("    name: $name")
-            out("    quality: ${it[MovieType.quality]}")
-            out("    codec: ${it[MovieType.codec]}")
-        }
-    }
-    if (contentName.isNotBlank() && contentName.isNotEmpty()) {
-        contentName = contentName.lowercase().replace("."," ")
-        Names.run {
-            select {
-                name eq contentName
-            }.firstOrNull()?.get(this.id)?.value ?:insertAndGetId {
-                it[name] = contentName
-            }.value
-        }.let { nameId ->
-            MagnetNames.insert {
-                it[name_id] = nameId
-                it[magnet_id] = id
-            }
-        }
-    }
-    out("  name: $contentName")
-}
+data class MagnetInfo(
+    val hash: String,
+    val dn: String,
+    var year: Int?  = null ,
+    var codec: String?  = null ,
+    var quality: String?  = null ,
+    var episode: String?  = null ,
+)
+
 context(Transaction)
 fun MagnetLink.saveToDB(
     out: (String) -> Unit = ::println,
@@ -140,26 +21,85 @@ fun MagnetLink.saveToDB(
     val link = link
     val hash = hash.toString()
     val parseableName = name ?: return
-    out(link)
-    val id = Magnets.select {
-        Magnets.hash eq hash
-    }.firstOrNull()?.let {
-        out("  hash: ${it[Magnets.hash]}")
-//        println("  - already in db")
-        it[Magnets.hash]
-    }?:run {
-        Magnets.insert { table ->
-            table[Magnets.hash] = hash
-            table[Magnets.dn] = parseableName.toString()
-        }.let {
-            out("  hash: ${it[Magnets.hash]}")
-            it[Magnets.hash]
-        }
-    }
-    parseableName.saveToDBAndYaml(
-        id = id,
-        out = out
+    val dto = MagnetInfo(
+        hash = hash,
+        dn = parseableName.toString(),
     )
+    parseableName.run {
+        require(getPlazaInfo() == null)
+        var contentName = ""
+        fun doIfContentNameIsBlank(block:()->String) {
+            if (contentName.isBlank()) {
+                contentName = block()
+            }
+        }
+        year?.let { (name,years) ->
+            doIfContentNameIsBlank { name }
+            dto.year = years.toIntOrNull()
+        }
+        serialInfo?.let { (name,serialInfo) ->
+            doIfContentNameIsBlank { name }
+            dto.episode = serialInfo.takeIf { it.trim().isNotEmpty() }
+        }
+        videoInfo?.let { (name,quality,codec) ->
+            doIfContentNameIsBlank { name }
+            dto.quality = quality
+            dto.codec = codec
+        }
+        System.err.println(hash)
+        val id = Magnets.insert {
+
+            Magnets.select {
+                Magnets.hash eq hash
+            }.firstOrNull()?.let {
+                require(false) {
+                    "hash $hash already exists dn: ${it[Magnets.dn]} this: ${parseableName}"
+                }
+            }
+            it[Magnets.hash] = hash
+            it[Magnets.dn] = parseableName.toString()
+            it[Magnets.year] = dto.year
+            it[Magnets.codec] = dto.codec
+            it[Magnets.quality] = dto.quality
+            it[Magnets.episode] = dto.episode
+        }.let {
+            out(link)
+            out("  name: $contentName")
+            out("  hash: ${it[Magnets.hash]}")
+            out("  dn: ${it[Magnets.dn]}")
+            it[Magnets.year]?.let { year ->
+                out("  year: $year")
+            }
+            it[Magnets.codec]?.let { codec ->
+                out("  codec: $codec")
+            }
+            it[Magnets.quality]?.let { quality ->
+                out("  quality: $quality")
+            }
+            it[Magnets.episode]?.let { episode ->
+                out("  episode: $episode")
+            }
+            it[Magnets.id].value
+        }
+        if (contentName.isNotBlank() && contentName.isNotEmpty()) {
+            contentName = contentName.lowercase().replace("."," ")
+            Names.run {
+                select { name eq contentName }.firstOrNull()
+                    ?.get(this.id)?.value
+                    ?:insertAndGetId {
+                        it[name] = contentName
+                    }.value
+            }.let { nameId ->
+                println(nameId to id )
+                MagnetNames.insert {
+                    it[name_id] = nameId
+                    it[magnet_id] = id
+                }
+            }
+        }
+
+
+    }
 }
 
 object a {
@@ -172,17 +112,9 @@ fun db(filePrefix:String): Database {
         DriverManager.getConnection("jdbc:sqlite:$filePrefix.db")
     }).also {db ->
         transaction(db) {
-//            addLogger(Slf4jSqlDebugLogger)
-            SchemaUtils.create(Magnets, Ignores, MovieYear, MovieType, Serial, Plaza, PlazaUpdate, Prefixes, PrefixSerial,Names,MagnetNames)
-            val prefixes = Prefixes.selectAll()
-                .map { it[Prefixes.prefix] }
-                .toSet()
-
-            ParseableName.prefixes.filter { !prefixes.contains(it) }.forEach {str->
-                Prefixes.insert {
-                    it[prefix] = str
-                }
-            }
+            addLogger(StdOutSqlLogger)
+            addLogger(Slf4jSqlDebugLogger)
+            SchemaUtils.create(Magnets,Names,MagnetNames)
         }
     }
 }
@@ -235,21 +167,26 @@ suspend fun Sequence<String>.toMagnetsDB(
     db:Database,
     yaml: BufferedWriter? = null,
     chunk: Int = 5000,
-) = this.chunked(chunk)
-    .asFlow()
-    .flowOn(Dispatchers.Default)
-    .map { it.map { link -> MagnetLink(link) } }
-    .flowOn(Dispatchers.IO)
+) = this
+    .map { MagnetLink(MagnetLink(it).link) }
+    .toSet()
+    .sortedBy { it.hash.toString() }
+    .chunked(chunk)
+//    .asFlow()
+//    .flowOn(Dispatchers.Default)
+//    .map { it.map { link -> MagnetLink(link) } }
+//    .flowOn(Dispatchers.IO)
     .onEach { links ->
         transaction(db) {
             links.forEach {
-                it.saveToDB { line -> yaml?.appendLine(line) }
+                it.saveToDB()
                 a.i++
             }
             yaml?.flush()
         }
-    }.let {
-        it.collect()
+    }
+    .toList().let {
+//        it.collect()
         yaml?.flush()
         yaml?.close()
     }
