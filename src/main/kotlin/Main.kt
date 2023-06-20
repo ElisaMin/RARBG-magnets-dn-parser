@@ -1,35 +1,19 @@
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.launch
 import java.io.File
 
 fun getFile(s:String) = File("../bts/rarbg-main/${s}.txt")
-suspend fun toMagnetsDB(dist:String,vararg files: File):CoroutineScope {
-    fun sequence() =
-        files.map { it.bufferedReader().lineSequence() }
-            .asSequence()
-            .flatten()
-    return coroutineScope {
-//        launch {
-//            val count = sequence().count()
-//            displayingProgress(count)
-//        }
-        launch {
-            sequence().toMagnetsDB(
-                db("dist/$dist"),
-                File("dist/$dist.yaml").bufferedWriter()
+fun toMagnetsDB(dist:String,vararg files: File) =
+    files.map { it.bufferedReader().lineSequence() }
+        .asSequence()
+        .flatten()
+        .toMagnetsDB(
+            db(
+                "dist/$dist".also { require(!File(it+".db").exists()) }
             )
-        }
-        this
-    }
-}
+        )
 
-suspend fun main() {
-
-
-    toMagnetsDB("rarbg.full",
+fun main() {
+    toMagnetsDB("rarbg.infos.single.2",
         getFile("moviesrarbg"),
         getFile("showsrarbg")
-    ).coroutineContext[Job]!!.join()
+    )
 }

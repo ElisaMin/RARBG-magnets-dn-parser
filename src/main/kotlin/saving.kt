@@ -1,36 +1,59 @@
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.transactions.transaction
-import java.io.BufferedWriter
 import java.sql.DriverManager
 import kotlin.sequences.Sequence
 
 
-data class MagnetInfo(
+context(Transaction)
+fun Collection<MagnetInfoDTO>.saveDB() {
+    val named = this.groupBy { it.name }
+    val names = Names.batchInsert(named.keys) {
+        this[Names.name] = it
+    }.map {
+        it[Names.id].value to it[Names.name]
+    }
+    Magnets.batchInsert(this) {
+        this[Magnets.hash] = it.hash
+        this[Magnets.dn] = it.dn
+        this[Magnets.year] = it.year
+        this[Magnets.codec] = it.codec
+        this[Magnets.quality] = it.quality
+        this[Magnets.episode] = it.episode
+    }.map {
+        it[Magnets.id].value to it[Magnets.hash]
+    }.map { (magnetId, hash) ->
+        val name = find { hash == it.hash }!!.name
+        val nameId = names.first { it.second == name }.first
+        magnetId to nameId
+    }.let {
+        MagnetNames.batchInsert(it) {(magnetID, nameID) ->
+            this[MagnetNames.magnet_id] = magnetID
+            this[MagnetNames.name_id] = nameID
+        }
+    }
+
+}
+
+data class MagnetInfoDTO(
     val hash: String,
     val dn: String,
     var year: Int?  = null ,
     var codec: String?  = null ,
     var quality: String?  = null ,
     var episode: String?  = null ,
+    var name:String = ""
 )
 
-context(Transaction)
-fun MagnetLink.saveToDB(
-    out: (String) -> Unit = ::println,
-){
-    val link = link
-    val hash = hash.toString()
-    val parseableName = name ?: return
-    val dto = MagnetInfo(
-        hash = hash,
-        dn = parseableName.toString(),
+fun MagnetLink.toDTO(): MagnetInfoDTO {
+    val dto = MagnetInfoDTO(
+        hash = hash.toString(),
+        dn = name!!.toString() ,
     )
-    parseableName.run {
+    name?.run {
         require(getPlazaInfo() == null)
-        var contentName = ""
         fun doIfContentNameIsBlank(block:()->String) {
-            if (contentName.isBlank()) {
-                contentName = block()
+            if (dto.name.isBlank()) {
+                dto.name = block().trim()
             }
         }
         year?.let { (name,years) ->
@@ -42,71 +65,19 @@ fun MagnetLink.saveToDB(
             dto.episode = serialInfo.takeIf { it.trim().isNotEmpty() }
         }
         videoInfo?.let { (name,quality,codec) ->
-            doIfContentNameIsBlank { name }
+            name?.let { s -> doIfContentNameIsBlank { s } }
             dto.quality = quality
             dto.codec = codec
         }
-        System.err.println(hash)
-        val id = Magnets.insert {
-
-            Magnets.select {
-                Magnets.hash eq hash
-            }.firstOrNull()?.let {
-                require(false) {
-                    "hash $hash already exists dn: ${it[Magnets.dn]} this: ${parseableName}"
-                }
-            }
-            it[Magnets.hash] = hash
-            it[Magnets.dn] = parseableName.toString()
-            it[Magnets.year] = dto.year
-            it[Magnets.codec] = dto.codec
-            it[Magnets.quality] = dto.quality
-            it[Magnets.episode] = dto.episode
-        }.let {
-            out(link)
-            out("  name: $contentName")
-            out("  hash: ${it[Magnets.hash]}")
-            out("  dn: ${it[Magnets.dn]}")
-            it[Magnets.year]?.let { year ->
-                out("  year: $year")
-            }
-            it[Magnets.codec]?.let { codec ->
-                out("  codec: $codec")
-            }
-            it[Magnets.quality]?.let { quality ->
-                out("  quality: $quality")
-            }
-            it[Magnets.episode]?.let { episode ->
-                out("  episode: $episode")
-            }
-            it[Magnets.id].value
-        }
-        if (contentName.isNotBlank() && contentName.isNotEmpty()) {
-            contentName = contentName.lowercase().replace("."," ")
-            Names.run {
-                select { name eq contentName }.firstOrNull()
-                    ?.get(this.id)?.value
-                    ?:insertAndGetId {
-                        it[name] = contentName
-                    }.value
-            }.let { nameId ->
-                println(nameId to id )
-                MagnetNames.insert {
-                    it[name_id] = nameId
-                    it[magnet_id] = id
-                }
-            }
-        }
-
-
+        dto.name = dto.name.trim().replace("."," ").trim().lowercase()
     }
-}
+    require(dto.name.isNotEmpty()) {
+        "error: link ${this.link} : name is empty for $name ${this.name} this $dto "
+    }
 
-object a {
-    @JvmStatic
-    var i = 0
-}
+    return dto
 
+}
 fun db(filePrefix:String): Database {
     return Database.connect(getNewConnection = {
         DriverManager.getConnection("jdbc:sqlite:$filePrefix.db")
@@ -118,75 +89,39 @@ fun db(filePrefix:String): Database {
         }
     }
 }
+fun <T> parseFailed(f:()->String,block:()->T) =
+    runCatching {
+        block()
+    }.onFailure {
+        System.err.println("skip: `${f()}` reason: ${it.message}")
+    }.getOrNull()
 
 
-
-fun displayingProgress(maxLines:Int) {
-    val max = maxLines.toFloat()
-    var percent = 0.0f
-    while (true) {
-        Thread.sleep(1000)
-        val line = a.i.toFloat()
-        //percent
-        val leastPresent = percent
-        percent = (line / max) * 100
-        print("\r${"%.2f".format(percent)}% lines: ${a.i}/$maxLines ")
-        //complain second time
-        val spends = percent - leastPresent
-        val last = 100 - percent
-        val second = last / spends
-        val left = when {
-//                second > 60 * 60 * 24 -> {
-//                    val days = second / (60 * 60 * 24)
-//                    "${"%.2f".format(days)} days"
-//                }
-            second > 60 * 60 -> {
-                val hours = second / (60 * 60)
-                "${"%.2f".format(hours)} hours"
-            }
-            second > 60 -> {
-                val minutes = second / 60
-                "${"%.2f".format(minutes)} minutes"
-            }
-            else -> {
-                "${"%.2f".format(second)} seconds"
-            }
-        }
-        print("left: $left")
-
-//            println("${
-//                // save two digits
-//                "%.2f".format((line / max) * 100)
-//            }% lines: ${a.i}/$maxLines")
-        if (a.i >= maxLines) {
-            break
-        }
-    }
-}
-suspend fun Sequence<String>.toMagnetsDB(
+fun Sequence<String>.toMagnetsDB(
     db:Database,
-    yaml: BufferedWriter? = null,
-    chunk: Int = 5000,
-) = this
-    .map { MagnetLink(MagnetLink(it).link) }
-    .toSet()
-    .sortedBy { it.hash.toString() }
-    .chunked(chunk)
-//    .asFlow()
-//    .flowOn(Dispatchers.Default)
-//    .map { it.map { link -> MagnetLink(link) } }
-//    .flowOn(Dispatchers.IO)
-    .onEach { links ->
-        transaction(db) {
-            links.forEach {
-                it.saveToDB()
-                a.i++
-            }
-            yaml?.flush()
+) {
+    val converts = this
+        .mapNotNull { parseFailed({it}) {
+            MagnetLink(MagnetLink(it).link).link
+        } }
+        .toSet()
+        .mapNotNull { parseFailed({it}) {
+            MagnetLink(it).toDTO()
+        } }
+        .groupBy { it.year }
+        .asSequence()
+        .sortedBy { it.key }
+        .toList()
+        .asReversed()
+        .flatMap {(_,infoDTOS) -> infoDTOS
+            .groupBy { it.name }
+            .asSequence()
+            .sortedBy {(names,_) -> names }
+            .flatMap { (_,dtos) -> dtos }
         }
+    transaction(db) {
+        converts.saveDB()
     }
-    .toList().let {
-//        it.collect()
-        yaml?.flush()
-        yaml?.close()
-    }
+
+}
+
