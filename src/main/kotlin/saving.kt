@@ -3,35 +3,32 @@ import org.jetbrains.exposed.sql.transactions.transaction
 import java.sql.DriverManager
 import kotlin.sequences.Sequence
 
+context(Transaction)
+fun Collection<MagnetInfoDTO>.save(names: Collection<Pair<Int, String>>) =  Magnets.batchInsert(this) {
+    this[Magnets.hash] = it.hash
+    this[Magnets.dn] = it.dn
+    this[Magnets.year] = it.year
+    this[Magnets.codec] = it.codec
+    this[Magnets.quality] = it.quality
+    this[Magnets.episode] = it.episode
+    this[Magnets.name_id] = names.first { (_,name) -> name == it.name }.first
+}.map {
+    it[Magnets.id].value to it[Magnets.hash]
+}.map { (magnetId, hash) ->
+    val name = find { hash == it.hash }!!.name
+    val nameId = names.first { it.second == name }.first
+    magnetId to nameId
+}
+
 
 context(Transaction)
-fun Collection<MagnetInfoDTO>.saveDB() {
+fun Collection<MagnetInfoDTO>.saveNames(): List<Pair<Int, String>> {
     val named = this.groupBy { it.name }
-    val names = Names.batchInsert(named.keys) {
+    return Names.batchInsert(named.keys) {
         this[Names.name] = it
     }.map {
         it[Names.id].value to it[Names.name]
     }
-    Magnets.batchInsert(this) {
-        this[Magnets.hash] = it.hash
-        this[Magnets.dn] = it.dn
-        this[Magnets.year] = it.year
-        this[Magnets.codec] = it.codec
-        this[Magnets.quality] = it.quality
-        this[Magnets.episode] = it.episode
-    }.map {
-        it[Magnets.id].value to it[Magnets.hash]
-    }.map { (magnetId, hash) ->
-        val name = find { hash == it.hash }!!.name
-        val nameId = names.first { it.second == name }.first
-        magnetId to nameId
-    }.let {
-        MagnetNames.batchInsert(it) {(magnetID, nameID) ->
-            this[MagnetNames.magnet_id] = magnetID
-            this[MagnetNames.name_id] = nameID
-        }
-    }
-
 }
 
 data class MagnetInfoDTO(
@@ -85,7 +82,7 @@ fun db(filePrefix:String): Database {
         transaction(db) {
             addLogger(StdOutSqlLogger)
             addLogger(Slf4jSqlDebugLogger)
-            SchemaUtils.create(Magnets,Names,MagnetNames)
+            SchemaUtils.create(Magnets,Names)
         }
     }
 }
@@ -117,10 +114,29 @@ fun Sequence<String>.toMagnetsDB(
             .groupBy { it.name }
             .asSequence()
             .sortedBy {(names,_) -> names }
+//            .flatMap {
+//                it.value.groupBy { it.episode }
+//                    .asSequence()
+//                    .sortedBy { it.key }
+//            }
             .flatMap { (_,dtos) -> dtos }
         }
+    var time = System.currentTimeMillis()
     transaction(db) {
-        converts.saveDB()
+
+        println("saving names")
+        converts.saveNames()
+    }.let {names ->
+        println("names count: ${names.size}, time: ${System.currentTimeMillis() - time}")
+        println("saving magnets")
+        converts.chunked(3000).forEach { dtoList ->
+            transaction(db) {
+                dtoList.save(names)
+            }
+            println("time: ${System.currentTimeMillis() - time}")
+            time = System.currentTimeMillis()
+        }
+
     }
 
 }

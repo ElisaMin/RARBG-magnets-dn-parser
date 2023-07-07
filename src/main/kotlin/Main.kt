@@ -7,12 +7,12 @@ fun toMagnetsDB(dist:String,vararg files: File) =
         .flatten()
         .toMagnetsDB(
             db(
-                "dist/$dist".also { require(!File(it+".db").exists()) }
+                "dist/$dist".also { require(!File("$it.db").exists()) }
             )
         )
 
 fun main() {
-    toMagnetsDB("rarbg.infos.single.2",
+    toMagnetsDB("rarbg.infos.name.single",
         getFile("moviesrarbg"),
         getFile("showsrarbg")
     )

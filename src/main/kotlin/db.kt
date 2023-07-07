@@ -13,13 +13,9 @@ object Magnets: IntIdTable("magnets") {
         .nullable()
     val episode = text("episode")
         .nullable()
+    val name_id = reference("name_id", Names.id)
 }
-
 object Names:IntIdTable("names") {
     val name = text("name")
         .uniqueIndex()
-}
-object MagnetNames: IntIdTable("magnet_names") {
-    val name_id = reference("name_id", Names.id)
-    val magnet_id = reference("magnet_id", Magnets.id)
 }
